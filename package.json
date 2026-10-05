@@ -1,0 +1,41 @@
+{
+  "name": "linuxmuster-nodejs",
+  "version": "1.0.0",
+  "description": "A Node.js library for integrating with linuxmuster.net.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "linuxmuster",
+    "schoolserver",
+    "smb",
+    "api",
+    "client"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SerafinoBarwinski/linuxmuster-nodejs.git"
+  },
+  "author": "Serafino Barwinski",
+  "license": "GPL-2.0",
+  "bugs": {
+    "url": "https://github.com/SerafinoBarwinski/linuxmuster-nodejs/issues"
+  },
+  "homepage": "https://github.com/SerafinoBarwinski/linuxmuster-nodejs#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "undici": "^8.11.2",
+    "validator": "^13.15.35"
+  }
+}
