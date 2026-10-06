@@ -8,8 +8,8 @@ linuxmuster.net is a server distribution made for running educational school net
 
 This is more of a proof of concept than a finished product. It's definitely not complete, but it works and it can be a decent base if you want to build on it.
 
-- Only linuxmuster.net versions **below 7.4 are supported right now**.
-- All the admin APIs are missing. The public docs don't say much about them, and I'm only a student on the network, so I couldn't try them out. (Yes, I could set up my own linuxmuster server to test things. I built this library in a single evening, so maybe I'll actually do that someday.)
+- This library does **not** use the official API, but the **WebUI API / Component API** (/api/core/* , /api/lmn/* ), which also worked before the big 7.4 API update (only tested up to 7.3).
+- All the admin APIs are missing. The public docs don't say much about them, and I'm only a student on the network, so I couldn't try them out. (Yes, I could set up my own linuxmuster server to test things, so maybe I'll actually do that someday.)
 
 Anyway, maybe it helps someone.
 
@@ -43,8 +43,7 @@ And configure it before doing anything else:
 ```javascript
 muster.configure({
     serverUrl: "https://server.example.com",
-    isServerVersionBelow74: true,
-    deprecatedTLS: false,
+    allowUnsafe: false,
     shutup: false,
     debug: false,
 });
@@ -59,10 +58,6 @@ console.log(identity);
 ```
 
 For all functions and their exact arguments, take a look at ./example.js. Every function is shown there with all of its arguments.
-
-## What's in there
-
-Login, identity, quota, display options, custom fields, setup status, session time, SMB shares, and basic file handling on the shares (list, upload, move, delete).
 
 ## About me
 

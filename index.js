@@ -1,6 +1,7 @@
 import { Agent, request, fetch, FormData } from "undici";
 import validator from "validator";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 
@@ -8,8 +9,6 @@ let agent = null;
 let config = {
   config_set: false,
 };
-
-const NOT_SUPPORTED = "Server version 7.4 or newer is not supported *yet*.";
 
 function validateServerUrl(serverUrl, noQuery) {
   if (!serverUrl) {
@@ -36,8 +35,7 @@ function validateServerUrl(serverUrl, noQuery) {
 
 function configure({
   serverUrl,
-  isServerVersionBelow74 = false,
-  deprecatedTLS = false,
+  allowUnsafe = false,
   shutup = false,
   debug = false
 }) {
@@ -59,19 +57,19 @@ function configure({
   config = {
     config_set: true,
     serverUrl: serverUrl,
-    isServerVersionBelow74: isServerVersionBelow74,
-    deprecatedTLS: deprecatedTLS,
+    allowUnsafe: allowUnsafe,
     shutup: shutup,
     debug: debug,
   }
 
-  if (deprecatedTLS) {
-    console.warn("Using a deprecated TLS version is not recommended");
+  if (allowUnsafe) {
+    console.warn("The use of an insecure connection is not recommended.");
 
     agent = new Agent({
       connect: {
         minVersion: "TLSv1",
-        maxVersion: "TLSv1.3"
+        maxVersion: "TLSv1.3",
+        rejectUnauthorized: false
       }
     });
   } else {
@@ -90,47 +88,89 @@ async function login(username, password) {
 
   let XApiKey = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, headers, body } = await request((config.serverUrl + "/api/core/auth"), {
-      method: 'POST',
-      dispatcher: agent,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        username: username,
-        password: password,
-        mode: "normal"
-      })
-    });
+  const { statusCode, headers, body } = await request((config.serverUrl + "/api/core/auth"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      username: username,
+      password: password,
+      mode: "normal"
+    })
+  });
 
-    // Body lesen/verwerfen, sonst bleibt die Verbindung offen
-    await body.dump();
+  // Body lesen/verwerfen, sonst bleibt die Verbindung offen
+  await body.dump();
 
-    // Cookie bewusst NICHT loggen
-    if (config.debug) { console.log((config.serverUrl + "/api/core/auth"), statusCode) }
+  if (config.debug) { console.log((config.serverUrl + "/api/core/auth"), statusCode) }
 
-    if (statusCode >= 400) {
-      console.error("Login failed. Status code:", statusCode);
-      return null;
-    }
-
-    // set-cookie kann ein String, ein Array oder gar nicht da sein
-    let cookie = headers['set-cookie'];
-    if (Array.isArray(cookie)) {
-      cookie = cookie.find((c) => c.startsWith("session="));
-    }
-    if (!cookie) {
-      console.error("Login failed. No session cookie received.");
-      return null;
-    }
-
-    XApiKey = cookie.match(/^session=([^;]+)/)?.[1] || null;
-  } else {
-    console.error(NOT_SUPPORTED);
+  if (statusCode >= 400) {
+    console.error("Login failed. Status code:", statusCode);
+    return null;
   }
 
+  // set-cookie kann ein String, ein Array oder gar nicht da sein
+  let cookie = headers['set-cookie'];
+  if (Array.isArray(cookie)) {
+    cookie = cookie.find((c) => c.startsWith("session="));
+  }
+  if (!cookie) {
+    console.error("Login failed. No session cookie received.");
+    return null;
+  }
+
+  XApiKey = cookie.match(/^session=([^;]+)/)?.[1] || null;
+
   return XApiKey;
+}
+
+async function logout(XApiKey) {
+  if (!config.config_set) { console.error("The configuration must be set first."); return null; }
+  if (!XApiKey) { console.error("Not all required arguments are provided."); return null; }
+
+  const { statusCode, body } = await request((config.serverUrl + "/api/core/logout"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      'Content-Type': 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+
+  // Body lesen/verwerfen, sonst bleibt die Verbindung offen
+  await body.dump();
+
+  if (config.debug) { console.log((config.serverUrl + "/api/core/logout"), statusCode) }
+
+  if (statusCode >= 400) {
+    console.error("Logout failed. Status code:", statusCode);
+    return null;
+  }
+
+  return statusCode;
+}
+
+async function changePassword(XApiKey, password, new_password) {
+  if (!config.config_set) { console.error("The configuration must be set first."); return null; }
+  if (!XApiKey || !password || !new_password) { console.error("Not all required arguments are provided."); return null; }
+
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/change-password"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      'Content-Type': 'application/json',
+      "Cookie": `session=${XApiKey}`
+    },
+    body: JSON.stringify({"password":password,"new_password":new_password})
+  });
+
+  // Body lesen/verwerfen, sonst bleibt die Verbindung offen
+  await body.dump();
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/change-password"), statusCode) }
+
+  return statusCode;
 }
 
 async function getIdentity(XApiKey) {
@@ -139,20 +179,16 @@ async function getIdentity(XApiKey) {
 
   let identity = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/core/identity"), {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/core/identity"), statusCode); }
-    identity = (await body.json()).identity;
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/core/identity"), {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/core/identity"), statusCode); }
+  identity = (await body.json()).identity;
 
   return identity;
 }
@@ -163,21 +199,17 @@ async function getQuota(XApiKey, username) {
 
   let quota = null;
 
-  if (config.isServerVersionBelow74) {
-    const url = config.serverUrl + "/api/lmn/quota/user/" + encodeURIComponent(username);
-    const { statusCode, body } = await request(url, {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log(url, statusCode); }
-    quota = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const url = config.serverUrl + "/api/lmn/quota/user/" + encodeURIComponent(username);
+  const { statusCode, body } = await request(url, {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log(url, statusCode); }
+  quota = await body.json();
 
   return quota;
 }
@@ -188,20 +220,16 @@ async function getDisplayOptions(XApiKey) {
 
   let displayOptions = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/lmn/display_options"), {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/lmn/display_options"), statusCode); }
-    displayOptions = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/display_options"), {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/display_options"), statusCode); }
+  displayOptions = await body.json();
 
   return displayOptions;
 }
@@ -212,21 +240,17 @@ async function getUICustomFields(XApiKey, username) {
 
   let UICustomFields = null;
 
-  if (config.isServerVersionBelow74) {
-    const url = config.serverUrl + "/api/lmn/users/" + encodeURIComponent(username) + "/customfields";
-    const { statusCode, body } = await request(url, {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log(url, statusCode); }
-    UICustomFields = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const url = config.serverUrl + "/api/lmn/users/" + encodeURIComponent(username) + "/customfields";
+  const { statusCode, body } = await request(url, {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log(url, statusCode); }
+  UICustomFields = await body.json();
 
   return UICustomFields;
 }
@@ -237,20 +261,16 @@ async function getSetupStatus(XApiKey) {
 
   let setupStatus = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/lmn/setup-wizard/is-configured"), {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/lmn/setup-wizard/is-configured"), statusCode); }
-    setupStatus = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/setup-wizard/is-configured"), {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/setup-wizard/is-configured"), statusCode); }
+  setupStatus = await body.json();
 
   return setupStatus;
 }
@@ -261,20 +281,16 @@ async function getSessionTime(XApiKey) {
 
   let sessionTime = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/core/session-time"), {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/core/session-time"), statusCode); }
-    sessionTime = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/core/session-time"), {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/core/session-time"), statusCode); }
+  sessionTime = await body.json();
 
   return sessionTime;
 }
@@ -285,21 +301,17 @@ async function getShares(XApiKey, username) {
 
   let smbShares = null;
 
-  if (config.isServerVersionBelow74) {
-    const url = config.serverUrl + "/api/lmn/smbclient/shares/" + encodeURIComponent(username);
-    const { statusCode, body } = await request(url, {
-      method: 'GET',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      }
-    });
-    if (config.debug) { console.log(url, statusCode); }
-    smbShares = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const url = config.serverUrl + "/api/lmn/smbclient/shares/" + encodeURIComponent(username);
+  const { statusCode, body } = await request(url, {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log(url, statusCode); }
+  smbShares = await body.json();
 
   return smbShares;
 }
@@ -310,21 +322,17 @@ async function list_dir(XApiKey, smbPath) {
 
   let ls = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/list"), {
-      method: 'POST',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      },
-      body: JSON.stringify({ path: smbPath })
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/list"), statusCode); }
-    ls = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/list"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    },
+    body: JSON.stringify({ path: smbPath })
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/list"), statusCode); }
+  ls = await body.json();
 
   return ls;
 }
@@ -337,11 +345,6 @@ async function uploadFile(
 ) {
   if (!config.config_set) { console.error("The configuration must be set first."); return null; }
   if (!XApiKey || !filePath || !smbPath) { console.error("Not all required arguments are provided."); return null; }
-
-  if (!config.isServerVersionBelow74) {
-    console.error(NOT_SUPPORTED);
-    return null;
-  }
 
   const filename = path.basename(filePath);
   const file = await readFile(filePath);
@@ -422,21 +425,17 @@ async function moveFile(XApiKey, src, dest) {
 
   let mv = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/move"), {
-      method: 'POST',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      },
-      body: JSON.stringify({ "src": src, "dst": dest })
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/move"), statusCode); }
-    mv = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/move"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    },
+    body: JSON.stringify({ "src": src, "dst": dest })
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/move"), statusCode); }
+  mv = await body.json();
 
   return mv;
 }
@@ -447,28 +446,79 @@ async function rmFile(XApiKey, smbPath) {
 
   let rm = null;
 
-  if (config.isServerVersionBelow74) {
-    const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/unlink"), {
-      method: 'POST',
-      dispatcher: agent,
-      headers: {
-        "Content-Type": 'application/json',
-        "Cookie": `session=${XApiKey}`
-      },
-      body: JSON.stringify({ "path": smbPath })
-    });
-    if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/unlink"), statusCode); }
-    rm = await body.json();
-  } else {
-    console.error(NOT_SUPPORTED);
-  }
+  const { statusCode, body } = await request((config.serverUrl + "/api/lmn/smbclient/unlink"), {
+    method: 'POST',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    },
+    body: JSON.stringify({ "path": smbPath })
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/lmn/smbclient/unlink"), statusCode); }
+  rm = await body.json();
 
   return rm;
 }
 
+async function getLinboISO(XApiKey, pathorbuffer) {
+  if (!config.config_set) { console.error("The configuration must be set first."); return null; }
+  if (!XApiKey) { console.error("Not all required arguments are provided."); return null; }
+
+  const response = await fetch((config.serverUrl + "/lmn/download/linbo.iso"), {
+    method: "GET",
+    dispatcher: agent,
+    headers: {
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Download failed: ${response.status}`);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  if (pathorbuffer == 0) {
+    return buffer;
+  } else {
+    const path = `/tmp/${randomUUID()}.iso`;
+    await writeFile(path, buffer);
+    return path
+  }
+}
+
+async function getWebdavQR(XApiKey, addPrefix) {
+  if (!config.config_set) { console.error("The configuration must be set first."); return null; }
+  if (!XApiKey) { console.error("Not all required arguments are provided."); return null; }
+
+  let qr_data = null;
+
+  const { statusCode, body } = await request((config.serverUrl + "/api/webdav/qrcode"), {
+    method: 'GET',
+    dispatcher: agent,
+    headers: {
+      "Content-Type": 'application/json',
+      "Cookie": `session=${XApiKey}`
+    }
+  });
+  if (config.debug) { console.log((config.serverUrl + "/api/webdav/qrcode"), statusCode); }
+  qr_data = await body.json();
+
+  if (Object.keys(qr_data).length > 0 && addPrefix) {
+    qr_data.qrcode = "data:image/png;base64," + qr_data.qrcode;
+  }
+
+  return qr_data;
+  
+}
+
 export default {
   configure,
+
   login,
+  logout,
+  changePassword,
 
   getIdentity,
   getQuota,
@@ -484,4 +534,7 @@ export default {
   uploadFile,
   moveFile,
   rmFile,
+
+  getLinboISO,
+  getWebdavQR,
 };
