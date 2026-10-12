@@ -1,6 +1,6 @@
 # Linux Muster Library
 
-A small Node.js library for talking to the API of **[linuxmuster.net](https://docs.linuxmuster.net/de/latest/about/about.html)**.
+A small / rudimentary Node.js library for talking to **[linuxmuster.net](https://docs.linuxmuster.net/de/latest/about/about.html)**.
 
 linuxmuster.net is a server distribution made for running educational school networks. If you want the full picture, the [official documentation](https://docs.linuxmuster.net/de/latest/about/about.html) is the place to go (it's mostly in German). [Wikipedia](https://de.wikipedia.org/wiki/Linuxmuster.net) also has some nice background, including the history of the project and a few fun facts.
 
