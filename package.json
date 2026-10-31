@@ -35,7 +35,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "undici": "^8.11.2",
+    "undici": "^8.12.2",
     "validator": "^13.15.35"
   }
 }
